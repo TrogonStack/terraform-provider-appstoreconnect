@@ -339,8 +339,119 @@ resource "appstoreconnect_beta_group" "second" {
   depends_on = [appstoreconnect_beta_group.first]
 }
 `, appID, appID),
-				ExpectError: regexp.MustCompile(`(?s)Beta Group Rejected.*with appstoreconnect_beta_group.second,.*\n.*name\s*=.*ENTITY_ERROR.ATTRIBUTE.INVALID.*already exists`),
+				ExpectError: regexp.MustCompile(`(?s)Beta Group Name Already Taken.*with appstoreconnect_beta_group.second,.*\n.*name\s*=.*ENTITY_ERROR.ATTRIBUTE.INVALID.DUPLICATE.*terraform\s+import\s+<address>\s+"` + appID + `/Example\s+Beta"`),
 			},
 		},
 	})
+}
+
+func betaGroupNamedConfig(appID, name string) string {
+	return testProviderConfig + fmt.Sprintf(`
+resource "appstoreconnect_beta_group" "test" {
+  app_id = %q
+  name   = %q
+}
+`, appID, name)
+}
+
+func TestAccBetaGroup_CreateAdoptsGroupAfterServerError(t *testing.T) {
+	fake := setupFake(t)
+	appID := fake.addApp(appAttributes{Name: "Example", BundleID: "com.example.app"})
+	for i := range 3 {
+		fake.betaGroups[fake.newID("BG")] = &fakeBetaGroup{appID: appID, attributes: betaGroupAttributes{Name: fmt.Sprintf("Example Beta %d", i)}}
+	}
+	fake.createFailure = createFailsAfterPersisting
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: betaGroupNamedConfig(appID, "Example Beta"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("appstoreconnect_beta_group.test", "name", "Example Beta"),
+					func(s *terraform.State) error {
+						fake.mu.Lock()
+						defer fake.mu.Unlock()
+						if len(fake.betaGroups) != 4 {
+							return fmt.Errorf("expected the failed create to leave exactly one new group, got %d groups", len(fake.betaGroups))
+						}
+						id := s.RootModule().Resources["appstoreconnect_beta_group.test"].Primary.ID
+						if group, ok := fake.betaGroups[id]; !ok || group.attributes.Name != "Example Beta" {
+							return fmt.Errorf("expected state to adopt the group the failed create persisted, got %q", id)
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
+}
+
+func TestAccBetaGroup_CreateReportsServerErrorWhenNothingWasCreated(t *testing.T) {
+	fake := setupFake(t)
+	appID := fake.addApp(appAttributes{Name: "Example", BundleID: "com.example.app"})
+	fake.createFailure = createFailsBeforePersisting
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      betaGroupNamedConfig(appID, "Example Beta"),
+				ExpectError: regexp.MustCompile(`HTTP 500:\s+UNEXPECTED_ERROR:\s+An unexpected error occurred`),
+			},
+		},
+	})
+}
+
+func TestAccBetaGroup_ImportByAppAndName(t *testing.T) {
+	fake := setupFake(t)
+	appID := fake.addApp(appAttributes{Name: "Example", BundleID: "com.example.app"})
+	for i := range 3 {
+		fake.betaGroups[fake.newID("BG")] = &fakeBetaGroup{appID: appID, attributes: betaGroupAttributes{Name: fmt.Sprintf("Example Beta %d", i)}}
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: betaGroupNamedConfig(appID, "Example Beta"),
+			},
+			{
+				ResourceName:      "appstoreconnect_beta_group.test",
+				ImportState:       true,
+				ImportStateId:     appID + "/Example Beta",
+				ImportStateVerify: true,
+			},
+			{
+				ResourceName:  "appstoreconnect_beta_group.test",
+				ImportState:   true,
+				ImportStateId: appID + "/Example",
+				ExpectError:   regexp.MustCompile(`has no beta group named exactly "Example"`),
+			},
+			{
+				ResourceName:  "appstoreconnect_beta_group.test",
+				ImportState:   true,
+				ImportStateId: appID + "/",
+				ExpectError:   regexp.MustCompile(`expected a beta group ID or <app_id>/<name>`),
+			},
+		},
+	})
+}
+
+func TestParseBetaGroupImportID(t *testing.T) {
+	for raw, want := range map[string]betaGroupImportID{
+		"BG1":                       {id: "BG1"},
+		"1234567890/Example Beta":   {appID: "1234567890", name: "Example Beta"},
+		"1234567890/Example/Beta 2": {appID: "1234567890", name: "Example/Beta 2"},
+	} {
+		got, err := parseBetaGroupImportID(raw)
+		if err != nil || got != want || got.String() != raw {
+			t.Fatalf("parsing %q: expected %+v, got %+v (%v)", raw, want, got, err)
+		}
+	}
+	for _, raw := range []string{"", "/Example Beta", "1234567890/"} {
+		if _, err := parseBetaGroupImportID(raw); err == nil {
+			t.Fatalf("expected %q to be rejected", raw)
+		}
+	}
 }

@@ -2,6 +2,8 @@ package provider
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"net/url"
 )
 
@@ -97,4 +99,35 @@ func (c *apiClient) updateBetaGroup(ctx context.Context, id string, attributes b
 
 func (c *apiClient) deleteBetaGroup(ctx context.Context, id string) error {
 	return c.delete(ctx, "/v1/betaGroups/"+url.PathEscape(id), nil)
+}
+
+var errBetaGroupNameAmbiguous = errors.New("more than one beta group has this name")
+
+func (c *apiClient) findBetaGroupByName(ctx context.Context, appID, name string) (*betaGroupResource, error) {
+	groups, err := listAll[betaGroupResource](ctx, c, "/v1/apps/"+url.PathEscape(appID)+"/betaGroups", url.Values{"limit": {"200"}})
+	if err != nil {
+		return nil, err
+	}
+	var found *betaGroupResource
+	for i := range groups {
+		if groups[i].Attributes.Name != name {
+			continue
+		}
+		if found != nil {
+			return nil, errBetaGroupNameAmbiguous
+		}
+		found = &groups[i]
+	}
+	return found, nil
+}
+
+func createOutcomeUnknown(err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	var apiErr *apiError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode >= http.StatusInternalServerError
+	}
+	return true
 }

@@ -7,6 +7,7 @@ description: |-
   Changing app_id, is_internal_group or has_access_to_all_builds replaces the group, because App Store Connect only accepts them when the group is created. Optional settings left unset keep whatever App Store Connect assigns.
   Destroying or replacing a group is destructive for its testers. Deleting the group removes every tester's membership in it, and a replacement group gets a new public link, so every join link already shared stops working. Consider lifecycle { prevent_destroy = true } on groups whose link has been shared.
   Internal groups cannot have a public link, so public_link_enabled, public_link_limit_enabled and public_link_limit are rejected at plan time when is_internal_group is true.
+  Creating a group is never retried, because App Store Connect can fail after it has already created the group. When a create fails with a server or network error, the provider looks for a group with exactly the configured name on the app and adopts it if one exists.
 ---
 
 # appstoreconnect_beta_group (Resource)
@@ -18,6 +19,8 @@ Changing `app_id`, `is_internal_group` or `has_access_to_all_builds` replaces th
 Destroying or replacing a group is destructive for its testers. Deleting the group removes every tester's membership in it, and a replacement group gets a new public link, so every join link already shared stops working. Consider `lifecycle { prevent_destroy = true }` on groups whose link has been shared.
 
 Internal groups cannot have a public link, so `public_link_enabled`, `public_link_limit_enabled` and `public_link_limit` are rejected at plan time when `is_internal_group` is true.
+
+Creating a group is never retried, because App Store Connect can fail after it has already created the group. When a create fails with a server or network error, the provider looks for a group with exactly the configured name on the app and adopts it if one exists.
 
 ## Example Usage
 
@@ -73,5 +76,9 @@ Import is supported using the following syntax:
 The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
 
 ```shell
+# By beta group ID.
 terraform import appstoreconnect_beta_group.external 00000000-0000-0000-0000-000000000000
+
+# By app ID and exact group name.
+terraform import appstoreconnect_beta_group.external "1234567890/Example Beta"
 ```

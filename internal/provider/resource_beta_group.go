@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -62,7 +63,9 @@ Changing ` + "`app_id`" + `, ` + "`is_internal_group`" + ` or ` + "`has_access_t
 
 Destroying or replacing a group is destructive for its testers. Deleting the group removes every tester's membership in it, and a replacement group gets a new public link, so every join link already shared stops working. Consider ` + "`lifecycle { prevent_destroy = true }`" + ` on groups whose link has been shared.
 
-Internal groups cannot have a public link, so ` + "`public_link_enabled`" + `, ` + "`public_link_limit_enabled`" + ` and ` + "`public_link_limit`" + ` are rejected at plan time when ` + "`is_internal_group`" + ` is true.`,
+Internal groups cannot have a public link, so ` + "`public_link_enabled`" + `, ` + "`public_link_limit_enabled`" + ` and ` + "`public_link_limit`" + ` are rejected at plan time when ` + "`is_internal_group`" + ` is true.
+
+Creating a group is never retried, because App Store Connect can fail after it has already created the group. When a create fails with a server or network error, the provider looks for a group with exactly the configured name on the app and adopts it if one exists.`,
 		Attributes: map[string]schema.Attribute{
 			"id": rsId(),
 			"app_id": schema.StringAttribute{
@@ -169,8 +172,13 @@ func (r *betaGroupResourceImpl) Create(ctx context.Context, req resource.CreateR
 		PublicLinkLimit:        optionalInt64(plan.PublicLinkLimit),
 		FeedbackEnabled:        optionalBool(plan.FeedbackEnabled),
 	})
+	if err != nil && createOutcomeUnknown(err) {
+		if adopted, lookupErr := r.client.findBetaGroupByName(ctx, plan.AppId.ValueString(), plan.Name.ValueString()); lookupErr == nil && adopted != nil {
+			created, err = adopted, nil
+		}
+	}
 	if err != nil {
-		appendBetaGroupError(&resp.Diagnostics, "Unable to create beta group", err)
+		appendBetaGroupError(&resp.Diagnostics, "Unable to create beta group", err, plan)
 		return
 	}
 	plan.Id = types.StringValue(created.ID)
@@ -187,7 +195,7 @@ func (r *betaGroupResourceImpl) Create(ctx context.Context, req resource.CreateR
 	if updateOnly != (betaGroupUpdateAttributes{}) {
 		group, err = r.client.updateBetaGroup(ctx, created.ID, updateOnly)
 		if err != nil {
-			appendBetaGroupError(&resp.Diagnostics, "Unable to configure beta group after create", err)
+			appendBetaGroupError(&resp.Diagnostics, "Unable to configure beta group after create", err, plan)
 			return
 		}
 	}
@@ -239,7 +247,7 @@ func (r *betaGroupResourceImpl) Update(ctx context.Context, req resource.UpdateR
 	}
 	group, err := r.client.updateBetaGroup(ctx, plan.Id.ValueString(), changes)
 	if err != nil {
-		appendBetaGroupError(&resp.Diagnostics, "Unable to update beta group", err)
+		appendBetaGroupError(&resp.Diagnostics, "Unable to update beta group", err, plan)
 		return
 	}
 
@@ -262,8 +270,52 @@ func (r *betaGroupResourceImpl) Delete(ctx context.Context, req resource.DeleteR
 	}
 }
 
+type betaGroupImportID struct {
+	id    string
+	appID string
+	name  string
+}
+
+func parseBetaGroupImportID(raw string) (betaGroupImportID, error) {
+	appID, name, byName := strings.Cut(raw, "/")
+	switch {
+	case !byName && raw != "":
+		return betaGroupImportID{id: raw}, nil
+	case byName && appID != "" && name != "":
+		return betaGroupImportID{appID: appID, name: name}, nil
+	default:
+		return betaGroupImportID{}, fmt.Errorf("expected a beta group ID or <app_id>/<name>, got %q", raw)
+	}
+}
+
+func (i betaGroupImportID) String() string {
+	if i.id != "" {
+		return i.id
+	}
+	return i.appID + "/" + i.name
+}
+
 func (r *betaGroupResourceImpl) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	importID, err := parseBetaGroupImportID(req.ID)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Import ID", err.Error())
+		return
+	}
+	if importID.id != "" {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), importID.id)...)
+		return
+	}
+
+	group, err := r.client.findBetaGroupByName(ctx, importID.appID, importID.name)
+	if err != nil {
+		resp.Diagnostics.AddError("API Error", fmt.Sprintf("Unable to look up beta group %q for app %s: %s", importID.name, importID.appID, err))
+		return
+	}
+	if group == nil {
+		resp.Diagnostics.AddError("Beta Group Not Found", fmt.Sprintf("App %s has no beta group named exactly %q.", importID.appID, importID.name))
+		return
+	}
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), group.ID)...)
 }
 
 func (r *betaGroupResourceImpl) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
@@ -306,13 +358,19 @@ var betaGroupAttributePointers = map[string]string{
 	"/data/relationships/app":                               "app_id",
 }
 
-func appendBetaGroupError(diags *diag.Diagnostics, summary string, err error) {
+func appendBetaGroupError(diags *diag.Diagnostics, summary string, err error, plan betaGroupResourceModel) {
 	rejected := entityErrors(err)
 	if len(rejected) == 0 {
 		diags.AddError("API Error", fmt.Sprintf("%s: %s", summary, err))
 		return
 	}
 	for _, d := range rejected {
+		if d.hasCode("ENTITY_ERROR.ATTRIBUTE.INVALID.DUPLICATE") {
+			diags.AddAttributeError(path.Root("name"), "Beta Group Name Already Taken",
+				fmt.Sprintf("%s: the app already has a beta group named %q (%s). To manage that group with Terraform, import it instead: terraform import <address> %q",
+					summary, plan.Name.ValueString(), d.Code, betaGroupImportID{appID: plan.AppId.ValueString(), name: plan.Name.ValueString()}))
+			continue
+		}
 		detail := fmt.Sprintf("%s: App Store Connect rejected the value (%s): %s", summary, d.Code, d.Detail)
 		if d.Source != nil {
 			if attribute, ok := betaGroupAttributePointers[d.Source.Pointer]; ok {

@@ -29,7 +29,16 @@ type fakeAppStoreConnect struct {
 	deleteReportsNotFound bool
 	lastBetaGroupUpdate   betaGroupUpdateAttributes
 	betaGroupReads        int
+	createFailure         fakeCreateFailure
 }
+
+type fakeCreateFailure int
+
+const (
+	createSucceeds fakeCreateFailure = iota
+	createFailsAfterPersisting
+	createFailsBeforePersisting
+)
 
 type fakeBetaGroup struct {
 	appID      string
@@ -73,6 +82,7 @@ func (f *fakeAppStoreConnect) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/apps", f.listApps)
 
+	mux.HandleFunc("GET /v1/apps/{id}/betaGroups", f.listAppBetaGroups)
 	mux.HandleFunc("POST /v1/betaGroups", f.createBetaGroup)
 	mux.HandleFunc("GET /v1/betaGroups/{id}", f.getBetaGroup)
 	mux.HandleFunc("PATCH /v1/betaGroups/{id}", f.updateBetaGroup)
@@ -111,7 +121,7 @@ func writeError(w http.ResponseWriter, status int, code, detail string) {
 func writeAttributeConflict(w http.ResponseWriter, attribute, detail string) {
 	writeJSON(w, http.StatusConflict, map[string]any{"errors": []apiErrorDetail{{
 		Status: strconv.Itoa(http.StatusConflict),
-		Code:   "ENTITY_ERROR.ATTRIBUTE.INVALID",
+		Code:   "ENTITY_ERROR.ATTRIBUTE.INVALID.DUPLICATE",
 		Title:  "An attribute value is invalid.",
 		Detail: detail,
 		Source: &apiErrorSource{Pointer: "/data/attributes/" + attribute},
@@ -206,9 +216,43 @@ func (f *fakeAppStoreConnect) createBetaGroup(w http.ResponseWriter, r *http.Req
 	setIfPresent(&attributes.PublicLinkLimit, a.PublicLinkLimit)
 	setIfPresent(&attributes.FeedbackEnabled, a.FeedbackEnabled)
 	refreshFakePublicLink(&attributes)
+	unexpected := func() {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"errors": []apiErrorDetail{{
+			Status: "500",
+			Code:   "UNEXPECTED_ERROR",
+			Title:  "An unexpected error occurred.",
+		}}})
+	}
+	failure := f.createFailure
+	f.createFailure = createSucceeds
+	if failure == createFailsBeforePersisting {
+		unexpected()
+		return
+	}
 	id := f.newID("BG")
 	f.betaGroups[id] = &fakeBetaGroup{appID: appID, attributes: attributes}
+	if failure == createFailsAfterPersisting {
+		unexpected()
+		return
+	}
 	writeJSON(w, http.StatusCreated, document[betaGroupResource]{Data: f.betaGroupResource(id, false)})
+}
+
+func (f *fakeAppStoreConnect) listAppBetaGroups(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	appID := r.PathValue("id")
+	if _, ok := f.apps[appID]; !ok {
+		writeNotFound(w, "apps", appID)
+		return
+	}
+	out := []betaGroupResource{}
+	for _, id := range slices.Sorted(maps.Keys(f.betaGroups)) {
+		if f.betaGroups[id].appID == appID {
+			out = append(out, f.betaGroupResource(id, false))
+		}
+	}
+	writePage(w, r, out)
 }
 
 func (f *fakeAppStoreConnect) getBetaGroup(w http.ResponseWriter, r *http.Request) {
