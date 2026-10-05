@@ -109,6 +109,23 @@ func TestClient_PaginatesThroughNextLinks(t *testing.T) {
 	}
 }
 
+func TestClient_StopsAfterMaxListPages(t *testing.T) {
+	requests := 0
+	client, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		next := fmt.Sprintf("http://%s%s?cursor=%d", r.Host, r.URL.Path, requests)
+		writeJSON(w, http.StatusOK, map[string]any{"data": []testItem{{ID: "ITEM"}}, "links": map[string]string{"next": next}})
+	})
+
+	_, err := listAll[testItem](t.Context(), client, "/v1/items", nil)
+	if err == nil || !strings.Contains(err.Error(), "stopped after 1000 pages") {
+		t.Fatalf("expected listAll to give up on an endless next chain, got %v", err)
+	}
+	if requests != maxListPages {
+		t.Fatalf("expected %d page requests, got %d", maxListPages, requests)
+	}
+}
+
 func TestClient_RefusesNextLinkToAnotherHost(t *testing.T) {
 	client, _ := newTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"data": []testItem{}, "links": map[string]string{"next": "https://other.example.com/v1/items"}})

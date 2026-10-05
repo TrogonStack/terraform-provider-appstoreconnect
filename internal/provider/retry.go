@@ -3,12 +3,16 @@ package provider
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/hashicorp/go-retryablehttp"
 )
 
+const requestAttemptTimeout = 30 * time.Second
+
 func newRetryableClient() *http.Client {
 	client := retryablehttp.NewClient()
+	client.HTTPClient.Timeout = requestAttemptTimeout
 	client.RetryMax = 5
 	client.CheckRetry = retryPolicy
 	client.Logger = nil

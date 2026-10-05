@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"testing"
+
+	"github.com/hashicorp/go-retryablehttp"
 )
 
 func TestRetryPolicy_429_Retries(t *testing.T) {
@@ -92,5 +94,15 @@ func TestRetryPolicy_CancelledContext_DoesNotRetry(t *testing.T) {
 	}
 	if retry {
 		t.Error("expected no retry on cancelled context")
+	}
+}
+
+func TestRetryableClient_BoundsEachAttempt(t *testing.T) {
+	transport, ok := newRetryableClient().Transport.(*retryablehttp.RoundTripper)
+	if !ok {
+		t.Fatalf("expected the retryable round tripper, got %T", newRetryableClient().Transport)
+	}
+	if got := transport.Client.HTTPClient.Timeout; got != requestAttemptTimeout {
+		t.Fatalf("expected a %s per-attempt timeout, got %s", requestAttemptTimeout, got)
 	}
 }

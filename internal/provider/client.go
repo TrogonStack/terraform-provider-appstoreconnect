@@ -110,10 +110,15 @@ type page[T any] struct {
 	Links pagedLinks `json:"links"`
 }
 
+const maxListPages = 1000
+
 func listAll[T any](ctx context.Context, c *apiClient, path string, query url.Values) ([]T, error) {
 	var all []T
 	endpoint := c.endpoint(path, query)
-	for endpoint != "" {
+	for pages := 0; endpoint != ""; pages++ {
+		if pages == maxListPages {
+			return nil, fmt.Errorf("listing %s stopped after %d pages without reaching the last page", path, maxListPages)
+		}
 		var current page[T]
 		if err := c.send(ctx, http.MethodGet, endpoint, nil, &current); err != nil {
 			return nil, err
