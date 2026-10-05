@@ -2,9 +2,11 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"os"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -81,6 +83,21 @@ func (p *appStoreConnectProvider) Configure(ctx context.Context, req provider.Co
 		return
 	}
 
+	unknown := map[string]bool{
+		"issuer_id":   data.IssuerID.IsUnknown(),
+		"key_id":      data.KeyID.IsUnknown(),
+		"private_key": data.PrivateKey.IsUnknown(),
+	}
+	for attribute, isUnknown := range unknown {
+		if isUnknown {
+			resp.Diagnostics.AddAttributeError(path.Root(attribute), "Unknown Provider Configuration",
+				fmt.Sprintf("`%s` depends on a value that is only known after apply, so the provider cannot authenticate during this plan. Use a value known at plan time, or apply the resources it depends on first with -target.", attribute))
+		}
+	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	// In tests, skip authentication and use the injected client.
 	if testAPIClient != nil {
 		resp.DataSourceData = testAPIClient
@@ -121,7 +138,8 @@ func (p *appStoreConnectProvider) Configure(ctx context.Context, req provider.Co
 		return
 	}
 
-	client := newAPIClient(defaultBaseURL, newRetryableClient(), newTokenSource(credentials))
+	tokens := newTokenSource(credentials)
+	client := newAPIClient(defaultBaseURL, newRetryableClient(tokens), tokens)
 	resp.DataSourceData = client
 	resp.ResourceData = client
 }

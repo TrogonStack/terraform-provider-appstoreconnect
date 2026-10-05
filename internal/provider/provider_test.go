@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
@@ -20,6 +22,8 @@ const testProviderConfig = `
 provider "appstoreconnect" {}
 `
 
+const unknownAttribute = "\x00unknown"
+
 func configureProvider(t *testing.T, config map[string]string) *provider.ConfigureResponse {
 	t.Helper()
 	ctx := context.Background()
@@ -33,7 +37,9 @@ func configureProvider(t *testing.T, config map[string]string) *provider.Configu
 
 	values := map[string]tftypes.Value{}
 	for _, name := range []string{"issuer_id", "key_id", "private_key"} {
-		if v, ok := config[name]; ok {
+		if v, ok := config[name]; ok && v == unknownAttribute {
+			values[name] = tftypes.NewValue(tftypes.String, tftypes.UnknownValue)
+		} else if v, ok := config[name]; ok {
 			values[name] = tftypes.NewValue(tftypes.String, v)
 		} else {
 			values[name] = tftypes.NewValue(tftypes.String, nil)
@@ -128,5 +134,31 @@ func TestProviderConfigure_UsesTestClient(t *testing.T) {
 	}
 	if resp.ResourceData != testAPIClient {
 		t.Fatal("expected the injected test client to be used")
+	}
+}
+
+func TestProviderConfigure_UnknownValues(t *testing.T) {
+	_, privateKeyPEM := newTestCredentials(t)
+	t.Setenv("APP_STORE_CONNECT_ISSUER_ID", testIssuerID)
+	t.Setenv("APP_STORE_CONNECT_KEY_ID", testKeyID)
+	t.Setenv("APP_STORE_CONNECT_PRIVATE_KEY", privateKeyPEM)
+
+	for _, attribute := range []string{"issuer_id", "key_id", "private_key"} {
+		t.Run(attribute, func(t *testing.T) {
+			resp := configureProvider(t, map[string]string{attribute: unknownAttribute})
+			if resp.Diagnostics.ErrorsCount() != 1 {
+				t.Fatalf("expected one error for the unknown attribute, got %v", resp.Diagnostics)
+			}
+			diagnostic, ok := resp.Diagnostics.Errors()[0].(diag.DiagnosticWithPath)
+			if !ok || !diagnostic.Path().Equal(path.Root(attribute)) {
+				t.Fatalf("expected the error on %s, got %v", attribute, resp.Diagnostics)
+			}
+			if !strings.Contains(diagnostic.Detail(), "only known after apply") || strings.Contains(diagnostic.Detail(), "must be set") {
+				t.Fatalf("expected an unknown-value explanation, got %q", diagnostic.Detail())
+			}
+			if resp.ResourceData != nil {
+				t.Fatal("expected no client while a credential is unknown")
+			}
+		})
 	}
 }

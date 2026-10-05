@@ -28,7 +28,8 @@ func TestLive_Authenticates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to load live credentials: %v", err)
 	}
-	client := newAPIClient(defaultBaseURL, newRetryableClient(), newTokenSource(credentials))
+	tokens := newTokenSource(credentials)
+	client := newAPIClient(defaultBaseURL, newRetryableClient(tokens), tokens)
 
 	var out struct {
 		Data []struct {

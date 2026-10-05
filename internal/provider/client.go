@@ -82,14 +82,7 @@ func (c *apiClient) send(ctx context.Context, method, endpoint string, body, out
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		apiErr := &apiError{StatusCode: resp.StatusCode}
-		var envelope struct {
-			Errors []apiErrorDetail `json:"errors"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&envelope); err == nil {
-			apiErr.Errors = envelope.Errors
-		}
-		return apiErr
+		return decodeAPIError(resp)
 	}
 
 	if out == nil || resp.StatusCode == http.StatusNoContent {
@@ -99,6 +92,25 @@ func (c *apiClient) send(ctx context.Context, method, endpoint string, body, out
 		return fmt.Errorf("decoding %s %s response: %w", method, endpoint, err)
 	}
 	return nil
+}
+
+const maxErrorBodyBytes = 64 << 10
+
+func decodeAPIError(resp *http.Response) error {
+	apiErr := &apiError{StatusCode: resp.StatusCode}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+	if err != nil {
+		return fmt.Errorf("%w (reading the error body failed: %w)", apiErr, err)
+	}
+	var envelope struct {
+		Errors []apiErrorDetail `json:"errors"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err == nil && len(envelope.Errors) > 0 {
+		apiErr.Errors = envelope.Errors
+		return apiErr
+	}
+	apiErr.Body = newErrorBody(raw)
+	return apiErr
 }
 
 type pagedLinks struct {

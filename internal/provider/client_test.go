@@ -166,6 +166,47 @@ func TestClient_DecodesErrors(t *testing.T) {
 	}
 }
 
+func TestClient_ErrorMessages(t *testing.T) {
+	for name, tc := range map[string]struct {
+		status int
+		body   string
+		want   string
+	}{
+		"detail": {
+			status: http.StatusNotFound,
+			body:   `{"errors":[{"status":"404","code":"NOT_FOUND","title":"Not found","detail":"There is no item 'MISSING'"}]}`,
+			want:   "HTTP 404: NOT_FOUND: There is no item 'MISSING'",
+		},
+		"title when detail is missing": {
+			status: http.StatusInternalServerError,
+			body:   `{"errors":[{"status":"500","code":"UNEXPECTED_ERROR","title":"An unexpected error occurred."}]}`,
+			want:   "HTTP 500: UNEXPECTED_ERROR: An unexpected error occurred.",
+		},
+		"raw body when not JSON": {
+			status: http.StatusBadGateway,
+			body:   "<html>Bad Gateway</html>",
+			want:   "HTTP 502: <html>Bad Gateway</html>",
+		},
+		"truncated raw body": {
+			status: http.StatusBadGateway,
+			body:   strings.Repeat("x", maxErrorBodyRunes+100),
+			want:   "HTTP 502: " + strings.Repeat("x", maxErrorBodyRunes) + "...",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, _ := newTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			})
+
+			err := client.get(t.Context(), "/v1/items", nil, nil)
+			if err == nil || !strings.HasSuffix(err.Error(), tc.want) {
+				t.Fatalf("expected the error to end with %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
 func TestClient_RejectsForeignSignature(t *testing.T) {
 	_, credentials := newTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
