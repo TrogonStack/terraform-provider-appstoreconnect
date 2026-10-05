@@ -1,8 +1,6 @@
 # terraform-provider-appstoreconnect
 
-Always use `/claude-md-improver` when updating this file.
-
-Terraform provider for the App Store Connect API. It currently ships the provider configuration, authentication and API client; resources are added one at a time as they are needed.
+Terraform provider for the App Store Connect API. Resources and data sources are added one at a time as they are needed.
 
 - **Module**: `github.com/TrogonStack/terraform-provider-appstoreconnect`
 - **Package**: `internal/provider/` (single flat package, all resources here)
@@ -80,7 +78,7 @@ Every `apiClient` method takes `ctx` as its first argument and builds its reques
 
 ### Retry
 
-Automatic retry on 429 and 5xx except 501, honoring `Retry-After`. No configuration attribute: the transport in `retry.go` is fixed.
+Automatic retry on 429 and 5xx except 501, honoring `Retry-After`, with a 90 second timeout per attempt and a fresh token on every attempt. POST is never retried, because App Store Connect can fail a create after it has already stored the object; a resource whose create fails with a 5xx or network error looks the object up by a unique attribute and adopts it instead. No configuration attribute: the transport in `retry.go` is fixed.
 
 ## CI
 
