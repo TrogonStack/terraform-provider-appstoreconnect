@@ -14,18 +14,41 @@ type apiErrorDetail struct {
 	Detail string `json:"detail"`
 }
 
+func (d apiErrorDetail) message() string {
+	if d.Detail != "" {
+		return d.Detail
+	}
+	return d.Title
+}
+
+const maxErrorBodyRunes = 512
+
+type errorBody string
+
+func newErrorBody(raw []byte) errorBody {
+	runes := []rune(strings.TrimSpace(string(raw)))
+	if len(runes) > maxErrorBodyRunes {
+		return errorBody(string(runes[:maxErrorBodyRunes]) + "...")
+	}
+	return errorBody(runes)
+}
+
 type apiError struct {
 	StatusCode int
 	Errors     []apiErrorDetail
+	Body       errorBody
 }
 
 func (e *apiError) Error() string {
 	if len(e.Errors) == 0 {
+		if e.Body != "" {
+			return fmt.Sprintf("App Store Connect API returned HTTP %d: %s", e.StatusCode, e.Body)
+		}
 		return fmt.Sprintf("App Store Connect API returned HTTP %d", e.StatusCode)
 	}
 	messages := make([]string, 0, len(e.Errors))
 	for _, d := range e.Errors {
-		messages = append(messages, fmt.Sprintf("%s: %s", d.Code, d.Detail))
+		messages = append(messages, fmt.Sprintf("%s: %s", d.Code, d.message()))
 	}
 	return fmt.Sprintf("App Store Connect API returned HTTP %d: %s", e.StatusCode, strings.Join(messages, "; "))
 }

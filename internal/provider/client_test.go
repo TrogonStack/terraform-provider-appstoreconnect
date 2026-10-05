@@ -109,6 +109,23 @@ func TestClient_PaginatesThroughNextLinks(t *testing.T) {
 	}
 }
 
+func TestClient_StopsAfterMaxListPages(t *testing.T) {
+	requests := 0
+	client, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		next := fmt.Sprintf("http://%s%s?cursor=%d", r.Host, r.URL.Path, requests)
+		writeJSON(w, http.StatusOK, map[string]any{"data": []testItem{{ID: "ITEM"}}, "links": map[string]string{"next": next}})
+	})
+
+	_, err := listAll[testItem](t.Context(), client, "/v1/items", nil)
+	if err == nil || !strings.Contains(err.Error(), "stopped after 1000 pages") {
+		t.Fatalf("expected listAll to give up on an endless next chain, got %v", err)
+	}
+	if requests != maxListPages {
+		t.Fatalf("expected %d page requests, got %d", maxListPages, requests)
+	}
+}
+
 func TestClient_RefusesNextLinkToAnotherHost(t *testing.T) {
 	client, _ := newTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"data": []testItem{}, "links": map[string]string{"next": "https://other.example.com/v1/items"}})
@@ -146,6 +163,47 @@ func TestClient_DecodesErrors(t *testing.T) {
 	}
 	if !isNotFound(fmt.Errorf("wrapped: %w", err)) {
 		t.Fatal("expected a wrapped API error to still count as not found")
+	}
+}
+
+func TestClient_ErrorMessages(t *testing.T) {
+	for name, tc := range map[string]struct {
+		status int
+		body   string
+		want   string
+	}{
+		"detail": {
+			status: http.StatusNotFound,
+			body:   `{"errors":[{"status":"404","code":"NOT_FOUND","title":"Not found","detail":"There is no item 'MISSING'"}]}`,
+			want:   "HTTP 404: NOT_FOUND: There is no item 'MISSING'",
+		},
+		"title when detail is missing": {
+			status: http.StatusInternalServerError,
+			body:   `{"errors":[{"status":"500","code":"UNEXPECTED_ERROR","title":"An unexpected error occurred."}]}`,
+			want:   "HTTP 500: UNEXPECTED_ERROR: An unexpected error occurred.",
+		},
+		"raw body when not JSON": {
+			status: http.StatusBadGateway,
+			body:   "<html>Bad Gateway</html>",
+			want:   "HTTP 502: <html>Bad Gateway</html>",
+		},
+		"truncated raw body": {
+			status: http.StatusBadGateway,
+			body:   strings.Repeat("x", maxErrorBodyRunes+100),
+			want:   "HTTP 502: " + strings.Repeat("x", maxErrorBodyRunes) + "...",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, _ := newTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			})
+
+			err := client.get(t.Context(), "/v1/items", nil, nil)
+			if err == nil || !strings.HasSuffix(err.Error(), tc.want) {
+				t.Fatalf("expected the error to end with %q, got %v", tc.want, err)
+			}
+		})
 	}
 }
 

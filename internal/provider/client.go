@@ -82,14 +82,7 @@ func (c *apiClient) send(ctx context.Context, method, endpoint string, body, out
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		apiErr := &apiError{StatusCode: resp.StatusCode}
-		var envelope struct {
-			Errors []apiErrorDetail `json:"errors"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&envelope); err == nil {
-			apiErr.Errors = envelope.Errors
-		}
-		return apiErr
+		return decodeAPIError(resp)
 	}
 
 	if out == nil || resp.StatusCode == http.StatusNoContent {
@@ -101,6 +94,25 @@ func (c *apiClient) send(ctx context.Context, method, endpoint string, body, out
 	return nil
 }
 
+const maxErrorBodyBytes = 64 << 10
+
+func decodeAPIError(resp *http.Response) error {
+	apiErr := &apiError{StatusCode: resp.StatusCode}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+	if err != nil {
+		return fmt.Errorf("%w (reading the error body failed: %w)", apiErr, err)
+	}
+	var envelope struct {
+		Errors []apiErrorDetail `json:"errors"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err == nil && len(envelope.Errors) > 0 {
+		apiErr.Errors = envelope.Errors
+		return apiErr
+	}
+	apiErr.Body = newErrorBody(raw)
+	return apiErr
+}
+
 type pagedLinks struct {
 	Next string `json:"next"`
 }
@@ -110,10 +122,15 @@ type page[T any] struct {
 	Links pagedLinks `json:"links"`
 }
 
+const maxListPages = 1000
+
 func listAll[T any](ctx context.Context, c *apiClient, path string, query url.Values) ([]T, error) {
 	var all []T
 	endpoint := c.endpoint(path, query)
-	for endpoint != "" {
+	for pages := 0; endpoint != ""; pages++ {
+		if pages == maxListPages {
+			return nil, fmt.Errorf("listing %s stopped after %d pages without reaching the last page", path, maxListPages)
+		}
 		var current page[T]
 		if err := c.send(ctx, http.MethodGet, endpoint, nil, &current); err != nil {
 			return nil, err
