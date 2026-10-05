@@ -86,9 +86,13 @@ func (c *apiClient) getBetaGroup(ctx context.Context, id string) (*betaGroupReso
 	return &out.Data, nil
 }
 
-func (c *apiClient) updateBetaGroup(ctx context.Context, id string, attributes betaGroupUpdateAttributes) error {
+func (c *apiClient) updateBetaGroup(ctx context.Context, id string, attributes betaGroupUpdateAttributes) (*betaGroupResource, error) {
+	out := &document[betaGroupResource]{}
 	in := document[betaGroupUpdate]{Data: betaGroupUpdate{Type: resourceTypeBetaGroups, ID: id, Attributes: attributes}}
-	return c.patch(ctx, "/v1/betaGroups/"+url.PathEscape(id), in, nil)
+	if err := c.patch(ctx, "/v1/betaGroups/"+url.PathEscape(id), in, out); err != nil {
+		return nil, err
+	}
+	return &out.Data, nil
 }
 
 func (c *apiClient) deleteBetaGroup(ctx context.Context, id string) error {

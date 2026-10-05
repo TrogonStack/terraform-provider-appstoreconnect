@@ -5,6 +5,8 @@ subcategory: ""
 description: |-
   Manages a TestFlight beta group for an app.
   Changing app_id, is_internal_group or has_access_to_all_builds replaces the group, because App Store Connect only accepts them when the group is created. Optional settings left unset keep whatever App Store Connect assigns.
+  Destroying or replacing a group is destructive for its testers. Deleting the group removes every tester's membership in it, and a replacement group gets a new public link, so every join link already shared stops working. Consider lifecycle { prevent_destroy = true } on groups whose link has been shared.
+  Internal groups cannot have a public link, so public_link_enabled, public_link_limit_enabled and public_link_limit are rejected at plan time when is_internal_group is true.
 ---
 
 # appstoreconnect_beta_group (Resource)
@@ -12,6 +14,10 @@ description: |-
 Manages a TestFlight beta group for an app.
 
 Changing `app_id`, `is_internal_group` or `has_access_to_all_builds` replaces the group, because App Store Connect only accepts them when the group is created. Optional settings left unset keep whatever App Store Connect assigns.
+
+Destroying or replacing a group is destructive for its testers. Deleting the group removes every tester's membership in it, and a replacement group gets a new public link, so every join link already shared stops working. Consider `lifecycle { prevent_destroy = true }` on groups whose link has been shared.
+
+Internal groups cannot have a public link, so `public_link_enabled`, `public_link_limit_enabled` and `public_link_limit` are rejected at plan time when `is_internal_group` is true.
 
 ## Example Usage
 
@@ -27,6 +33,10 @@ resource "appstoreconnect_beta_group" "external" {
   public_link_limit_enabled = true
   public_link_limit         = 500
   feedback_enabled          = true
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 ```
 
@@ -46,7 +56,7 @@ resource "appstoreconnect_beta_group" "external" {
 - `ios_builds_available_for_apple_vision` (Boolean) Whether iOS builds are available to testers on Apple Vision Pro. App Store Connect only accepts it on update, so the provider sets it right after creating the group.
 - `is_internal_group` (Boolean) Whether the group is for internal testers (members of the team) rather than external testers.
 - `public_link_enabled` (Boolean) Whether testers can join the group through a public link.
-- `public_link_limit` (Number) The maximum number of testers who can join through the public link.
+- `public_link_limit` (Number) The maximum number of testers who can join through the public link. Requires `public_link_limit_enabled = true`. A limit of 0 does not close the link and App Store Connect rejects it; set `public_link_enabled = false` to close the link instead.
 - `public_link_limit_enabled` (Boolean) Whether `public_link_limit` caps the testers who join through the public link.
 
 ### Read-Only

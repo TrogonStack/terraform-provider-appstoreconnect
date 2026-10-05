@@ -28,6 +28,7 @@ type fakeAppStoreConnect struct {
 
 	deleteReportsNotFound bool
 	lastBetaGroupUpdate   betaGroupUpdateAttributes
+	betaGroupReads        int
 }
 
 type fakeBetaGroup struct {
@@ -107,6 +108,25 @@ func writeError(w http.ResponseWriter, status int, code, detail string) {
 	}}})
 }
 
+func writeAttributeConflict(w http.ResponseWriter, attribute, detail string) {
+	writeJSON(w, http.StatusConflict, map[string]any{"errors": []apiErrorDetail{{
+		Status: strconv.Itoa(http.StatusConflict),
+		Code:   "ENTITY_ERROR.ATTRIBUTE.INVALID",
+		Title:  "An attribute value is invalid.",
+		Detail: detail,
+		Source: &apiErrorSource{Pointer: "/data/attributes/" + attribute},
+	}}})
+}
+
+func (f *fakeAppStoreConnect) betaGroupNameTaken(appID, name, exceptID string) bool {
+	for id, group := range f.betaGroups {
+		if id != exceptID && group.appID == appID && group.attributes.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func writeNotFound(w http.ResponseWriter, kind, id string) {
 	writeError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("There is no resource of type '%s' with id '%s'", kind, id))
 }
@@ -174,6 +194,10 @@ func (f *fakeAppStoreConnect) createBetaGroup(w http.ResponseWriter, r *http.Req
 		return
 	}
 	a := in.Data.Attributes
+	if f.betaGroupNameTaken(appID, a.Name, "") {
+		writeAttributeConflict(w, "name", "A beta group with this name already exists for the app.")
+		return
+	}
 	attributes := betaGroupAttributes{Name: a.Name, CreatedDate: "2026-01-01T00:00:00Z", FeedbackEnabled: true}
 	setIfPresent(&attributes.IsInternalGroup, a.IsInternalGroup)
 	setIfPresent(&attributes.HasAccessToAllBuilds, a.HasAccessToAllBuilds)
@@ -190,6 +214,7 @@ func (f *fakeAppStoreConnect) createBetaGroup(w http.ResponseWriter, r *http.Req
 func (f *fakeAppStoreConnect) getBetaGroup(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.betaGroupReads++
 	id := r.PathValue("id")
 	if _, ok := f.betaGroups[id]; !ok {
 		writeNotFound(w, "betaGroups", id)
@@ -216,6 +241,10 @@ func (f *fakeAppStoreConnect) updateBetaGroup(w http.ResponseWriter, r *http.Req
 		return
 	}
 	a := in.Data.Attributes
+	if a.Name != nil && f.betaGroupNameTaken(group.appID, *a.Name, id) {
+		writeAttributeConflict(w, "name", "A beta group with this name already exists for the app.")
+		return
+	}
 	f.lastBetaGroupUpdate = a
 	setIfPresent(&group.attributes.Name, a.Name)
 	setIfPresent(&group.attributes.PublicLinkEnabled, a.PublicLinkEnabled)

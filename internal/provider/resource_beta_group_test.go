@@ -2,6 +2,7 @@ package provider
 
 import (
 	"fmt"
+	"regexp"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -53,6 +54,7 @@ func TestAccBetaGroup_Lifecycle(t *testing.T) {
 					resource.TestCheckResourceAttrSet("appstoreconnect_beta_group.test", "public_link"),
 					resource.TestCheckResourceAttrSet("appstoreconnect_beta_group.test", "public_link_id"),
 					resource.TestCheckResourceAttrSet("appstoreconnect_beta_group.test", "created_date"),
+					expectNoBetaGroupReads(fake),
 				),
 			},
 			{
@@ -180,6 +182,7 @@ resource "appstoreconnect_beta_group" "test" {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("appstoreconnect_beta_group.test", "ios_builds_available_for_apple_silicon_mac", "true"),
 					resource.TestCheckResourceAttr("appstoreconnect_beta_group.test", "ios_builds_available_for_apple_vision", "true"),
+					expectNoBetaGroupReads(fake),
 				),
 			},
 		},
@@ -238,6 +241,105 @@ func TestAccBetaGroup_DeleteIsIdempotent(t *testing.T) {
 					fake.deleteReportsNotFound = true
 					return nil
 				},
+			},
+		},
+	})
+}
+
+func expectNoBetaGroupReads(fake *fakeAppStoreConnect) resource.TestCheckFunc {
+	return func(_ *terraform.State) error {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		if fake.betaGroupReads != 0 {
+			return fmt.Errorf("expected create to build state from the write responses, got %d reads", fake.betaGroupReads)
+		}
+		return nil
+	}
+}
+
+func TestAccBetaGroup_ConfigValidation(t *testing.T) {
+	invalid := map[string]struct {
+		attributes string
+		err        *regexp.Regexp
+	}{
+		"internal group with public link enabled": {
+			attributes: "is_internal_group = true\n  public_link_enabled = true",
+			err:        regexp.MustCompile(`Internal beta groups cannot have a\s+public link`),
+		},
+		"internal group with public link limit enabled": {
+			attributes: "is_internal_group = true\n  public_link_limit_enabled = false",
+			err:        regexp.MustCompile(`Remove\s+.public_link_limit_enabled.`),
+		},
+		"internal group with public link limit": {
+			attributes: "is_internal_group = true\n  public_link_limit_enabled = true\n  public_link_limit = 10",
+			err:        regexp.MustCompile(`Remove\s+.public_link_limit.,`),
+		},
+		"limit without limit enabled": {
+			attributes: "public_link_enabled = true\n  public_link_limit = 10",
+			err:        regexp.MustCompile(`Public Link Limit Not Enabled`),
+		},
+		"limit with limit disabled": {
+			attributes: "public_link_enabled = true\n  public_link_limit_enabled = false\n  public_link_limit = 10",
+			err:        regexp.MustCompile(`Public Link Limit Not Enabled`),
+		},
+		"zero limit": {
+			attributes: "public_link_enabled = true\n  public_link_limit_enabled = true\n  public_link_limit = 0",
+			err:        regexp.MustCompile(`must be at least 1`),
+		},
+		"empty name": {
+			attributes: "",
+			err:        regexp.MustCompile(`string length must be at least 1`),
+		},
+	}
+
+	for name, tc := range invalid {
+		t.Run(name, func(t *testing.T) {
+			setupFake(t)
+			groupName := "Example Beta"
+			if tc.attributes == "" {
+				groupName = ""
+			}
+			resource.Test(t, resource.TestCase{
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				Steps: []resource.TestStep{
+					{
+						Config: testProviderConfig + fmt.Sprintf(`
+resource "appstoreconnect_beta_group" "test" {
+  app_id = "APP"
+  name   = %q
+  %s
+}
+`, groupName, tc.attributes),
+						PlanOnly:    true,
+						ExpectError: tc.err,
+					},
+				},
+			})
+		})
+	}
+}
+
+func TestAccBetaGroup_DuplicateNameRejected(t *testing.T) {
+	fake := setupFake(t)
+	appID := fake.addApp(appAttributes{Name: "Example", BundleID: "com.example.app"})
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testProviderConfig + fmt.Sprintf(`
+resource "appstoreconnect_beta_group" "first" {
+  app_id = %q
+  name   = "Example Beta"
+}
+
+resource "appstoreconnect_beta_group" "second" {
+  app_id     = %q
+  name       = "Example Beta"
+  depends_on = [appstoreconnect_beta_group.first]
+}
+`, appID, appID),
+				ExpectError: regexp.MustCompile(`(?s)Beta Group Rejected.*with appstoreconnect_beta_group.second,.*\n.*name\s*=.*ENTITY_ERROR.ATTRIBUTE.INVALID.*already exists`),
 			},
 		},
 	})

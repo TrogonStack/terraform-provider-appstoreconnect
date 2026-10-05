@@ -9,4 +9,8 @@ resource "appstoreconnect_beta_group" "external" {
   public_link_limit_enabled = true
   public_link_limit         = 500
   feedback_enabled          = true
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
