@@ -7,11 +7,21 @@ import (
 	"strings"
 )
 
+type apiErrorSource struct {
+	Pointer   string `json:"pointer,omitempty"`
+	Parameter string `json:"parameter,omitempty"`
+}
+
 type apiErrorDetail struct {
-	Status string `json:"status"`
-	Code   string `json:"code"`
-	Title  string `json:"title"`
-	Detail string `json:"detail"`
+	Status string          `json:"status"`
+	Code   string          `json:"code"`
+	Title  string          `json:"title"`
+	Detail string          `json:"detail"`
+	Source *apiErrorSource `json:"source,omitempty"`
+}
+
+func (d apiErrorDetail) hasCode(prefix string) bool {
+	return d.Code == prefix || strings.HasPrefix(d.Code, prefix+".")
 }
 
 func (d apiErrorDetail) message() string {
@@ -60,4 +70,18 @@ func hasStatus(err error, status int) bool {
 
 func isNotFound(err error) bool {
 	return hasStatus(err, http.StatusNotFound)
+}
+
+func entityErrors(err error) []apiErrorDetail {
+	var apiErr *apiError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusConflict {
+		return nil
+	}
+	var details []apiErrorDetail
+	for _, d := range apiErr.Errors {
+		if d.hasCode("ENTITY_ERROR") {
+			details = append(details, d)
+		}
+	}
+	return details
 }
