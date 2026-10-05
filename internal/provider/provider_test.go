@@ -6,9 +6,19 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/provider"
+	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
 )
+
+var testAccProtoV6ProviderFactories = map[string]func() (tfprotov6.ProviderServer, error){
+	"appstoreconnect": providerserver.NewProtocol6WithError(New("test")()),
+}
+
+const testProviderConfig = `
+provider "appstoreconnect" {}
+`
 
 func configureProvider(t *testing.T, config map[string]string) *provider.ConfigureResponse {
 	t.Helper()

@@ -131,7 +131,9 @@ func (p *appStoreConnectProvider) Resources(ctx context.Context) []func() resour
 }
 
 func (p *appStoreConnectProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
-	return []func() datasource.DataSource{}
+	return []func() datasource.DataSource{
+		newAppDataSource,
+	}
 }
 
 func New(version string) func() provider.Provider {
