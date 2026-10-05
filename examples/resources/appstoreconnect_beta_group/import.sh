@@ -1,0 +1,1 @@
+terraform import appstoreconnect_beta_group.external 00000000-0000-0000-0000-000000000000

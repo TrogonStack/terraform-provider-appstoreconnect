@@ -2,6 +2,7 @@ package provider
 
 import (
 	"crypto/ecdsa"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"net/http"
@@ -22,14 +23,24 @@ type fakeAppStoreConnect struct {
 	keyID     string
 	nextID    int
 
-	apps map[string]appAttributes
+	apps       map[string]appAttributes
+	betaGroups map[string]*fakeBetaGroup
+
+	deleteReportsNotFound bool
+	lastBetaGroupUpdate   betaGroupUpdateAttributes
+}
+
+type fakeBetaGroup struct {
+	appID      string
+	attributes betaGroupAttributes
 }
 
 func newFakeAppStoreConnect(credentials apiCredentials) *fakeAppStoreConnect {
 	return &fakeAppStoreConnect{
-		publicKey: &credentials.privateKey.PublicKey,
-		keyID:     credentials.keyID,
-		apps:      map[string]appAttributes{},
+		publicKey:  &credentials.privateKey.PublicKey,
+		keyID:      credentials.keyID,
+		apps:       map[string]appAttributes{},
+		betaGroups: map[string]*fakeBetaGroup{},
 	}
 }
 
@@ -61,6 +72,11 @@ func (f *fakeAppStoreConnect) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/apps", f.listApps)
 
+	mux.HandleFunc("POST /v1/betaGroups", f.createBetaGroup)
+	mux.HandleFunc("GET /v1/betaGroups/{id}", f.getBetaGroup)
+	mux.HandleFunc("PATCH /v1/betaGroups/{id}", f.updateBetaGroup)
+	mux.HandleFunc("DELETE /v1/betaGroups/{id}", f.deleteBetaGroup)
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("no route for %s %s", r.Method, r.URL.Path))
 	})
@@ -91,6 +107,20 @@ func writeError(w http.ResponseWriter, status int, code, detail string) {
 	}}})
 }
 
+func writeNotFound(w http.ResponseWriter, kind, id string) {
+	writeError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("There is no resource of type '%s' with id '%s'", kind, id))
+}
+
+func readBody(w http.ResponseWriter, r *http.Request, out any) bool {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(out); err != nil {
+		writeError(w, http.StatusBadRequest, "PARAMETER_ERROR.INVALID", err.Error())
+		return false
+	}
+	return true
+}
+
 func writePage[T any](w http.ResponseWriter, r *http.Request, items []T) {
 	offset, _ := strconv.Atoi(r.URL.Query().Get("cursor"))
 	end := min(offset+fakePageSize, len(items))
@@ -116,4 +146,116 @@ func (f *fakeAppStoreConnect) listApps(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writePage(w, r, out)
+}
+
+func (f *fakeAppStoreConnect) betaGroupResource(id string, includeApp bool) betaGroupResource {
+	group := f.betaGroups[id]
+	out := betaGroupResource{Type: resourceTypeBetaGroups, ID: id, Attributes: group.attributes}
+	if includeApp {
+		out.Relationships.App.Data = &resourceIdentifier{Type: resourceTypeApps, ID: group.appID}
+	}
+	return out
+}
+
+func (f *fakeAppStoreConnect) createBetaGroup(w http.ResponseWriter, r *http.Request) {
+	var in document[betaGroupCreate]
+	if !readBody(w, r, &in) {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if in.Data.Type != resourceTypeBetaGroups || in.Data.Relationships.App.Data == nil {
+		writeError(w, http.StatusUnprocessableEntity, "ENTITY_ERROR.RELATIONSHIP.REQUIRED", "type betaGroups and an app relationship are required")
+		return
+	}
+	appID := in.Data.Relationships.App.Data.ID
+	if _, ok := f.apps[appID]; !ok {
+		writeNotFound(w, "apps", appID)
+		return
+	}
+	a := in.Data.Attributes
+	attributes := betaGroupAttributes{Name: a.Name, CreatedDate: "2026-01-01T00:00:00Z", FeedbackEnabled: true}
+	setIfPresent(&attributes.IsInternalGroup, a.IsInternalGroup)
+	setIfPresent(&attributes.HasAccessToAllBuilds, a.HasAccessToAllBuilds)
+	setIfPresent(&attributes.PublicLinkEnabled, a.PublicLinkEnabled)
+	setIfPresent(&attributes.PublicLinkLimitEnabled, a.PublicLinkLimitEnabled)
+	setIfPresent(&attributes.PublicLinkLimit, a.PublicLinkLimit)
+	setIfPresent(&attributes.FeedbackEnabled, a.FeedbackEnabled)
+	refreshFakePublicLink(&attributes)
+	id := f.newID("BG")
+	f.betaGroups[id] = &fakeBetaGroup{appID: appID, attributes: attributes}
+	writeJSON(w, http.StatusCreated, document[betaGroupResource]{Data: f.betaGroupResource(id, false)})
+}
+
+func (f *fakeAppStoreConnect) getBetaGroup(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := r.PathValue("id")
+	if _, ok := f.betaGroups[id]; !ok {
+		writeNotFound(w, "betaGroups", id)
+		return
+	}
+	writeJSON(w, http.StatusOK, document[betaGroupResource]{Data: f.betaGroupResource(id, r.URL.Query().Get("include") == "app")})
+}
+
+func (f *fakeAppStoreConnect) updateBetaGroup(w http.ResponseWriter, r *http.Request) {
+	var in document[betaGroupUpdate]
+	if !readBody(w, r, &in) {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := r.PathValue("id")
+	group, ok := f.betaGroups[id]
+	if !ok {
+		writeNotFound(w, "betaGroups", id)
+		return
+	}
+	if in.Data.ID != id || in.Data.Type != resourceTypeBetaGroups {
+		writeError(w, http.StatusConflict, "ENTITY_ERROR.ATTRIBUTE.INVALID", "the body does not identify this beta group")
+		return
+	}
+	a := in.Data.Attributes
+	f.lastBetaGroupUpdate = a
+	setIfPresent(&group.attributes.Name, a.Name)
+	setIfPresent(&group.attributes.PublicLinkEnabled, a.PublicLinkEnabled)
+	setIfPresent(&group.attributes.PublicLinkLimitEnabled, a.PublicLinkLimitEnabled)
+	setIfPresent(&group.attributes.PublicLinkLimit, a.PublicLinkLimit)
+	setIfPresent(&group.attributes.FeedbackEnabled, a.FeedbackEnabled)
+	setIfPresent(&group.attributes.IosBuildsAvailableForAppleSiliconMac, a.IosBuildsAvailableForAppleSiliconMac)
+	setIfPresent(&group.attributes.IosBuildsAvailableForAppleVision, a.IosBuildsAvailableForAppleVision)
+	refreshFakePublicLink(&group.attributes)
+	writeJSON(w, http.StatusOK, document[betaGroupResource]{Data: f.betaGroupResource(id, false)})
+}
+
+func (f *fakeAppStoreConnect) deleteBetaGroup(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := r.PathValue("id")
+	if _, ok := f.betaGroups[id]; !ok {
+		writeNotFound(w, "betaGroups", id)
+		return
+	}
+	delete(f.betaGroups, id)
+	if f.deleteReportsNotFound {
+		writeNotFound(w, "betaGroups", id)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func setIfPresent[T any](target *T, value *T) {
+	if value != nil {
+		*target = *value
+	}
+}
+
+func refreshFakePublicLink(attributes *betaGroupAttributes) {
+	if attributes.PublicLinkEnabled {
+		attributes.PublicLinkID = "abcdEFGH"
+		attributes.PublicLink = "https://testflight.example.com/join/abcdEFGH"
+		return
+	}
+	attributes.PublicLinkID = ""
+	attributes.PublicLink = ""
 }

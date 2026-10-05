@@ -145,7 +145,9 @@ func (p *appStoreConnectProvider) Configure(ctx context.Context, req provider.Co
 }
 
 func (p *appStoreConnectProvider) Resources(ctx context.Context) []func() resource.Resource {
-	return []func() resource.Resource{}
+	return []func() resource.Resource{
+		newBetaGroup,
+	}
 }
 
 func (p *appStoreConnectProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
